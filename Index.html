@@ -1,0 +1,523 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<!-- Prevent pinch/zoom on mobile when tapping; keep initial scale correct -->
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Unicorn Runner — Improved</title>
+<style>
+  :root{
+    --ui-bg: rgba(255,255,255,0.9);
+    --accent: #ff7fcf;
+    --ui-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+  }
+  html,body{height:100%;margin:0;background:linear-gradient(180deg,#e6f7ff 0%, #fef2f8 100%);font-family:var(--ui-font);-webkit-font-smoothing:antialiased;-webkit-text-size-adjust:100%;}
+  .page{
+    min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:20px 12px;
+  }
+  header{
+    width:100%;max-width:980px;display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;gap:12px;
+  }
+  .title{
+    display:flex;align-items:center;gap:12px;
+  }
+  .brand{
+    background:linear-gradient(90deg,#ffd1eb,#ffd87f);
+    border-radius:10px;padding:8px 12px;font-weight:700;color:#2b2b2b;font-size:16px;
+    box-shadow:0 6px 18px rgba(0,0,0,0.08);
+  }
+  .controls{
+    display:flex;gap:8px;align-items:center;
+  }
+  button{
+    background:var(--ui-bg);border:0;border-radius:8px;padding:10px 14px;font-size:16px;cursor:pointer;
+    box-shadow:0 6px 18px rgba(0,0,0,0.06);
+  }
+  button:active{transform:translateY(1px)}
+  #coinsDisplay, #scoreDisplay{font-size:16px;color:#222;padding:8px 10px;border-radius:8px;background:rgba(255,255,255,0.6);box-shadow:0 4px 10px rgba(0,0,0,0.04)}
+  .stage{
+    width:100%;max-width:980px;flex:0 0 auto;background:transparent;border-radius:12px;display:flex;justify-content:center;align-items:center;padding:0;
+  }
+  canvas{display:block;width:100%;height:300px;border-radius:12px;background:transparent;touch-action:none;-webkit-tap-highlight-color:transparent;box-shadow:0 14px 40px rgba(18,30,50,0.12)}
+  /* Shop modal */
+  .modal {
+    position:fixed;left:0;top:0;right:0;bottom:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,0.45);z-index:60;
+  }
+  .modal.open{display:flex}
+  .modal-card{
+    width:94%;max-width:760px;background:white;border-radius:12px;padding:18px;box-shadow:0 20px 60px rgba(0,0,0,0.18);
+  }
+  .maps{display:flex;gap:12px;flex-wrap:wrap}
+  .map-card{flex:1 1 220px;background:linear-gradient(180deg,#fff,#fcfcff);border-radius:10px;padding:12px;min-height:140px;display:flex;flex-direction:column;justify-content:space-between}
+  .map-preview{height:86px;border-radius:8px;overflow:hidden;box-shadow:inset 0 -10px 40px rgba(0,0,0,0.04)}
+  .map-info{display:flex;justify-content:space-between;align-items:center;margin-top:8px}
+  .map-btn{background:linear-gradient(90deg,#ffd1eb,#ffd87f);border:0;padding:8px 10px;border-radius:8px;color:#222;cursor:pointer;font-weight:700}
+  .footer-note{margin-top:10px;color:#666;font-size:13px}
+  /* Make sure interactive text is not auto-zoomed on iOS */
+  a,button,input,textarea{font-size:16px}
+  @media (max-width:560px){ canvas{height:220px} .brand{font-size:14px} }
+</style>
+</head>
+<body>
+<div class="page">
+  <header>
+    <div class="title">
+      <div class="brand">🦄 Unicorn Runner</div>
+      <div id="desc" style="color:#444;font-size:14px">Tap to jump • Collect coins • Buy new maps</div>
+    </div>
+
+    <div class="controls">
+      <div id="scoreDisplay">Score: 0</div>
+      <div id="coinsDisplay">Coins: 0</div>
+      <button id="shopOpenBtn" aria-haspopup="dialog">Shop</button>
+      <button id="restartBtn">Restart</button>
+    </div>
+  </header>
+
+  <div class="stage">
+    <canvas id="gameCanvas" width="1200" height="400"></canvas>
+  </div>
+</div>
+
+<!-- Shop modal (DOM-based UI, cleaner than canvas overlay) -->
+<div id="shopModal" class="modal" role="dialog" aria-modal="true" aria-hidden="true">
+  <div class="modal-card" role="document">
+    <h3 style="margin:0 0 12px 0">Shop — Unlock Maps</h3>
+    <div class="maps" id="mapsContainer"></div>
+    <div class="footer-note">Tap a map to select or buy it. Close the shop by tapping outside or pressing the button.</div>
+  </div>
+</div>
+
+<script>
+/* Improved Unicorn Runner
+ - Emoji unicorn player
+ - Retina-aware canvas scaling
+ - Animated sky gradient + parallax cloud layers
+ - DOM shop modal with clean UI
+ - Prevent zoom on tap via viewport + >=16px font-size on interactives
+*/
+
+// ----- Setup -----
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+let DPR = Math.max(window.devicePixelRatio || 1, 1);
+function resizeForDPR(){
+  // Keep logical resolution larger for smoother rendering
+  const cssWidth = canvas.clientWidth || 900;
+  const cssHeight = canvas.clientHeight || 300;
+  canvas.width = Math.floor(cssWidth * DPR);
+  canvas.height = Math.floor(cssHeight * DPR);
+  canvas.style.width = cssWidth + 'px';
+  canvas.style.height = cssHeight + 'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0); // scale drawing to css pixels
+}
+resizeForDPR();
+window.addEventListener('resize', ()=>{
+  DPR = Math.max(window.devicePixelRatio || 1, 1);
+  resizeForDPR();
+});
+
+// ----- Game state -----
+let state = 'menu'; // menu, playing, dead
+let score = 0;
+let coins = parseInt(localStorage.getItem('ur_coins') || '0', 10);
+let best = parseInt(localStorage.getItem('ur_best') || '0', 10);
+let unlocked = JSON.parse(localStorage.getItem('ur_unlocked') || '["Classic"]');
+const uiScore = document.getElementById('scoreDisplay');
+const uiCoins = document.getElementById('coinsDisplay');
+const shopOpenBtn = document.getElementById('shopOpenBtn');
+const restartBtn = document.getElementById('restartBtn');
+
+const maps = [
+  {name:'Classic', price:0, key:'classic'},
+  {name:'Sunset', price:20, key:'sunset'},
+  {name:'Neon', price:50, key:'neon'}
+];
+
+// player (we'll draw a big emoji)
+const player = { x: 120, y: 0, size: 58, vy: 0, onGround: true };
+const groundY = 300; // css pixels baseline
+let gravity = 0.75, jumpVel = -13;
+
+// obstacles / coins
+let obstacles = [], coinList = [];
+let spawnTimer = 0, coinTimer = 0;
+let baseSpeed = 5;
+
+// sky + clouds parallax
+const sky = {
+  t: 0,
+  layers: [
+    {speed: 0.08, clouds: []},
+    {speed: 0.22, clouds: []},
+    {speed: 0.42, clouds: []}
+  ]
+};
+
+// create soft cloud shapes for each layer
+function makeCloud(layerIndex){
+  const w = 120 + Math.random()*160;
+  const h = 40 + Math.random()*34;
+  return {
+    x: canvas.clientWidth + Math.random()*400,
+    y: 40 + layerIndex*40 + Math.random()*60,
+    w, h, puffCount: 4 + Math.floor(Math.random()*3), opacity: 0.7 - layerIndex*0.18
+  };
+}
+for(let i=0;i<sky.layers.length;i++){
+  for(let j=0;j<4;j++) sky.layers[i].clouds.push(makeCloud(i));
+}
+
+// helpers
+function rand(min,max){ return Math.random()*(max-min)+min; }
+
+// ----- Input -----
+function jump(){
+  if(player.onGround){
+    player.vy = jumpVel;
+    player.onGround = false;
+  }
+}
+canvas.addEventListener('pointerdown', (e)=>{
+  e.preventDefault();
+  if(state === 'menu') startGame();
+  else if(state === 'playing') jump();
+  else if(state === 'dead') startGame();
+});
+window.addEventListener('keydown', e=>{
+  if(e.code === 'Space') {
+    e.preventDefault();
+    if(state === 'menu') startGame();
+    else if(state === 'playing') jump();
+    else if(state === 'dead') startGame();
+  }
+});
+restartBtn.addEventListener('click', ()=> startGame());
+shopOpenBtn.addEventListener('click', toggleShop);
+
+// ----- Shop (DOM) -----
+const shopModal = document.getElementById('shopModal');
+const mapsContainer = document.getElementById('mapsContainer');
+
+function renderShop(){
+  mapsContainer.innerHTML = '';
+  maps.forEach(m=>{
+    const card = document.createElement('div');
+    card.className = 'map-card';
+    const preview = document.createElement('div');
+    preview.className = 'map-preview';
+    // small canvas inside preview to show theme samples
+    const cv = document.createElement('canvas');
+    cv.width = 300; cv.height = 160; cv.style.width = '100%'; cv.style.height = '100%';
+    preview.appendChild(cv);
+    const info = document.createElement('div');
+    info.className = 'map-info';
+    const title = document.createElement('div'); title.textContent = m.name;
+    const btn = document.createElement('button');
+    btn.className = 'map-btn';
+    if(unlocked.includes(m.name)){
+      btn.textContent = 'Select';
+      btn.onclick = ()=>{ // move map to end of unlocked as selected
+        unlocked = unlocked.filter(n=>n!==m.name); unlocked.push(m.name);
+        localStorage.setItem('ur_unlocked', JSON.stringify(unlocked));
+        renderShop();
+      };
+    } else {
+      btn.textContent = `Buy ${m.price}`;
+      btn.onclick = ()=>{
+        if(coins >= m.price){
+          coins -= m.price; localStorage.setItem('ur_coins', coins);
+          unlocked.push(m.name); localStorage.setItem('ur_unlocked', JSON.stringify(unlocked));
+          renderShop();
+          updateUI();
+        } else {
+          btn.textContent = 'Need more coins';
+          setTimeout(()=> renderShop(), 900);
+        }
+      };
+    }
+    info.appendChild(title); info.appendChild(btn);
+    card.appendChild(preview); card.appendChild(info);
+    mapsContainer.appendChild(card);
+
+    // draw a tiny preview in the small canvas
+    const pctx = cv.getContext('2d');
+    drawMiniPreview(pctx, cv.width, cv.height, m.key);
+  });
+}
+function drawMiniPreview(pctx, w, h, key){
+  pctx.clearRect(0,0,w,h);
+  if(key === 'classic'){
+    const g = pctx.createLinearGradient(0,0,0,h);
+    g.addColorStop(0,'#a7f3d0'); g.addColorStop(0.6,'#bde0ff'); g.addColorStop(1,'#ffd6f0');
+    pctx.fillStyle = g; pctx.fillRect(0,0,w,h);
+    pctx.fillStyle = '#fff'; pctx.font = '18px serif'; pctx.fillText('🌈', 10, 36);
+  } else if(key === 'sunset'){
+    const g = pctx.createLinearGradient(0,0,0,h);
+    g.addColorStop(0,'#FFDEE9'); g.addColorStop(1,'#B5FFFC');
+    pctx.fillStyle = g; pctx.fillRect(0,0,w,h);
+    pctx.fillStyle = '#FFD27F'; pctx.beginPath(); pctx.arc(w*0.8, h*0.2, 14,0,Math.PI*2); pctx.fill();
+  } else if(key === 'neon'){
+    const g = pctx.createLinearGradient(0,0,0,h);
+    g.addColorStop(0,'#10002b'); g.addColorStop(1,'#240046');
+    pctx.fillStyle = g; pctx.fillRect(0,0,w,h);
+    pctx.fillStyle = 'rgba(255,255,255,0.08)'; pctx.fillRect(10, h*0.45, w-20, h*0.2);
+  }
+}
+
+function toggleShop(){
+  const open = shopModal.classList.toggle('open');
+  shopModal.setAttribute('aria-hidden', !open);
+  if(open) renderShop();
+}
+shopModal.addEventListener('pointerdown', (e)=> {
+  // close when clicking outside the modal card
+  if(e.target === shopModal) { toggleShop(); }
+});
+
+// ----- Game loop -----
+let last = performance.now();
+function loop(now){
+  const dt = Math.min(40, now - last) / 16.67;
+  last = now;
+  if(state === 'playing') update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// ----- Start / Reset -----
+function startGame(){
+  score = 0; obstacles = []; coinList = []; spawnTimer = 0; coinTimer = 0;
+  player.y = groundY - player.size; player.vy = 0; player.onGround = true;
+  state = 'playing';
+  updateUI();
+}
+function gameOver(){
+  state = 'dead';
+  if(Math.floor(score) > best){ best = Math.floor(score); localStorage.setItem('ur_best', best); }
+  updateUI();
+}
+function updateUI(){
+  uiScore.textContent = 'Score: ' + Math.floor(score) + (best ? ` (Best ${best})` : '');
+  uiCoins.textContent = 'Coins: ' + coins;
+  // Save coins immediately
+  localStorage.setItem('ur_coins', coins);
+}
+
+// ----- Update: physics, spawn -----
+function update(delta){
+  // time step delta in ~16.67px units
+  const speed = baseSpeed + Math.floor(score / 100);
+
+  // player physics
+  player.vy += gravity;
+  player.y += player.vy;
+  if(player.y + player.size >= groundY){
+    player.y = groundY - player.size;
+    player.vy = 0;
+    player.onGround = true;
+  } else player.onGround = false;
+
+  // spawn obstacles
+  spawnTimer -= delta;
+  if(spawnTimer <= 0){
+    spawnTimer = rand(60,140) - Math.min(score/5,40);
+    obstacles.push({x: canvas.clientWidth + 40, y: groundY - rand(38,88), w: 48, h: rand(24,48), speed: speed + rand(0,2)});
+  }
+  // spawn coins
+  coinTimer -= delta;
+  if(coinTimer <= 0){
+    coinTimer = rand(90,200);
+    coinList.push({x: canvas.clientWidth + 40, y: groundY - rand(90,150), r: 10, speed});
+  }
+
+  // update obstacles
+  for(let i=obstacles.length-1;i>=0;i--){
+    const o = obstacles[i]; o.x -= o.speed;
+    if(o.x + o.w < -20) obstacles.splice(i,1);
+    else {
+      const pbox = {x: player.x+8, y: player.y+8, w: player.size-16, h: player.size-10};
+      if(rectsOverlap(pbox, o)){
+        gameOver();
+      }
+    }
+  }
+  // update coins
+  for(let i=coinList.length-1;i>=0;i--){
+    const c = coinList[i]; c.x -= c.speed;
+    if(c.x + c.r < -20) coinList.splice(i,1);
+    else {
+      const px = player.x + player.size/2, py = player.y + player.size/2;
+      const dx = px - c.x, dy = py - c.y;
+      if(dx*dx + dy*dy < (c.r + player.size*0.45)*(c.r + player.size*0.45)){
+        coins += 1;
+        localStorage.setItem('ur_coins', coins);
+        coinList.splice(i,1);
+      }
+    }
+  }
+
+  // update sky clouds
+  sky.t += delta * 0.006;
+  for(let li=0; li<sky.layers.length; li++){
+    const layer = sky.layers[li];
+    layer.clouds.forEach(c=> c.x -= layer.speed * (0.6 + speed*0.06));
+    // respawn offscreen clouds
+    for(let i=layer.clouds.length-1;i>=0;i--){
+      if(layer.clouds[i].x + layer.clouds[i].w < -40) layer.clouds.splice(i,1);
+    }
+    while(layer.clouds.length < 4) layer.clouds.push(makeCloud(li));
+  }
+
+  score += delta * 0.6 * (1 + Math.min(score/1000,2));
+  updateUI();
+}
+
+// ----- Draw functions -----
+function draw(){
+  const W = canvas.clientWidth, H = canvas.clientHeight;
+  ctx.clearRect(0,0,W,H);
+
+  drawSky(ctx, W, H);
+  drawClouds(ctx, W, H);
+  drawGround(ctx, W, H);
+
+  // obstacles
+  for(const o of obstacles){
+    ctx.fillStyle = 'rgba(255,255,255,0.95)';
+    roundRect(ctx, o.x, o.y, o.w, o.h, 8, true, false);
+    // small detail
+    ctx.fillStyle = 'rgba(0,0,0,0.04)'; ctx.fillRect(o.x + 8, o.y + 6, o.w - 16, 6);
+  }
+
+  // coins
+  for(const c of coinList){
+    drawCoin(ctx, c.x, c.y, c.r);
+  }
+
+  // unicorn emoji as player
+  drawUnicornEmoji(ctx, player.x, player.y, player.size);
+
+  // overlay horizon HUD (map name)
+  const chosen = unlocked[unlocked.length - 1] || 'Classic';
+  ctx.fillStyle = 'rgba(255,255,255,0.6)'; roundRect(ctx, 12, 12, 220, 36, 8, true, false);
+  ctx.fillStyle = '#222'; ctx.font = '14px ' + (navigator.platform && navigator.platform.includes('iPhone') ? 'Helvetica' : 'Arial');
+  ctx.fillText('Map: ' + chosen, 22, 34);
+
+  // menu / dead screens
+  if(state === 'menu'){
+    ctx.fillStyle = 'rgba(0,0,0,0.45)'; roundRect(ctx, W/2 - 160, H/2 - 70, 320, 140, 12, true, false);
+    ctx.fillStyle = '#fff'; ctx.font = '20px ' + 'Arial'; ctx.fillText('Tap to start — Unicorn Runner', W/2 - 120, H/2 - 30);
+    ctx.font = '14px Arial'; ctx.fillText('Tap anywhere to jump. Collect coins to buy maps!', W/2 - 130, H/2 + 4);
+  } else if(state === 'dead'){
+    ctx.fillStyle = 'rgba(0,0,0,0.6)'; roundRect(ctx, W/2 - 160, H/2 - 70, 320, 140, 12, true, false);
+    ctx.fillStyle = '#fff'; ctx.font = '22px Arial'; ctx.fillText('You crashed!', W/2 - 60, H/2 - 28);
+    ctx.font = '16px Arial'; ctx.fillText('Score: ' + Math.floor(score) + '  Coins: ' + coins, W/2 - 90, H/2 + 6);
+    ctx.font = '14px Arial'; ctx.fillText('Press Restart to play again.', W/2 - 110, H/2 + 36);
+  }
+}
+
+// sky gradient with gentle animated change
+function drawSky(ctx, W, H){
+  const t = performance.now() * 0.00008;
+  const g = ctx.createLinearGradient(0,0,0,H);
+  // oscillate colors a bit for subtle life
+  const v = Math.sin(t) * 0.06;
+  g.addColorStop(0, `hsl(${200 + v*10}, 80%, 88%)`);
+  g.addColorStop(0.5, `hsl(${210 + v*8}, 85%, 95%)`);
+  g.addColorStop(1, `hsl(${320 + v*14}, 95%, 97%)`);
+  ctx.fillStyle = g; ctx.fillRect(0,0,W,H);
+}
+
+// parallax clouds, nicer shapes
+function drawClouds(ctx, W, H){
+  for(let li=0; li<sky.layers.length; li++){
+    const layer = sky.layers[li];
+    ctx.save();
+    ctx.globalAlpha = layer.clouds.length ? layer.clouds[0].opacity : 0.75;
+    for(const c of layer.clouds){
+      drawSoftCloud(ctx, c.x, c.y, c.w, c.h, 0.6 - li*0.12);
+    }
+    ctx.restore();
+  }
+}
+function drawSoftCloud(ctx, x, y, w, h, opacity){
+  ctx.save();
+  ctx.globalAlpha = opacity;
+  const grad = ctx.createLinearGradient(x - w*0.2, y - h*0.5, x + w*0.2, y + h*0.7);
+  grad.addColorStop(0, 'rgba(255,255,255,0.95)');
+  grad.addColorStop(1, 'rgba(240,250,255,0.9)');
+  ctx.fillStyle = grad;
+  // a few ellipses to make a fluffy cloud
+  const puff = Math.max(3, Math.floor(w/50));
+  for(let i=0;i<puff;i++){
+    const px = x + (i - puff/2) * (w*0.22);
+    const py = y + Math.sin(i + x*0.01) * (h*0.08);
+    ctx.beginPath();
+    ctx.ellipse(px, py, w*0.22 + Math.abs(Math.sin(i))*6, h*0.55 + (i%2)*4, 0, 0, Math.PI*2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+// ground
+function drawGround(ctx, W, H){
+  ctx.fillStyle = '#79c267';
+  ctx.fillRect(0, groundY, W, H - groundY);
+}
+
+// draw unicorn emoji centered in the player's box
+function drawUnicornEmoji(ctx, x, y, size){
+  ctx.save();
+  // emoji font — use size plus a small factor so it sits nicely
+  ctx.font = `${Math.floor(size)}px serif`;
+  ctx.textBaseline = 'alphabetic';
+  // emoji drawing: measure and center
+  const metrics = ctx.measureText('🦄');
+  // approximate height placement
+  const offsetY = 6; // fine tune so emoji sits on the ground
+  ctx.fillText('🦄', x, y + size + offsetY);
+  ctx.restore();
+}
+
+// draw coin
+function drawCoin(ctx, x, y, r){
+  ctx.save();
+  // rim
+  ctx.beginPath(); ctx.fillStyle = '#f5c542'; ctx.arc(x, y, r, 0, Math.PI*2); ctx.fill();
+  // inner shine
+  const g = ctx.createLinearGradient(x - r, y - r, x + r, y + r);
+  g.addColorStop(0, 'rgba(255,255,255,0.9)'); g.addColorStop(0.5, 'rgba(255,255,255,0.2)'); g.addColorStop(1, 'rgba(255,255,255,0.04)');
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.arc(x - r*0.15, y - r*0.33, r*0.7, 0, Math.PI*2); ctx.fill();
+  ctx.restore();
+}
+
+// helpers
+function rectsOverlap(a,b){
+  return !(a.x + a.w < b.x || a.x > b.x + b.w || a.y + a.h < b.y || a.y > b.y + b.h);
+}
+function roundRect(ctx, x, y, w, h, r, fill, stroke){
+  if (typeof r === 'undefined') r = 6;
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+  if(fill) ctx.fill();
+  if(stroke) ctx.stroke();
+}
+
+// initial UI update
+updateUI();
+
+// Export for debugging (optional)
+window.UNICORN = { startGame, toggleShop, renderShop };
+
+</script>
+</body>
+</html>
