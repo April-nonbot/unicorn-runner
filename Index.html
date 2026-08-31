@@ -1,0 +1,363 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Unicorn Runner Prototype</title>
+<style>
+  html,body{height:100%;margin:0;background:#f0f8ff;display:flex;align-items:center;justify-content:center}
+  canvas{background:#87CEEB;display:block;border:6px solid #fff;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,0.2)}
+  #ui{position:fixed;left:12px;top:12px;color:#222;font-family:Arial,Helvetica,sans-serif}
+  button{font-size:14px;padding:6px 10px;margin-left:8px}
+  @media (max-width:600px){canvas{width:95vw;height:55vh}}
+</style>
+</head>
+<body>
+<canvas id="c" width="900" height="300"></canvas>
+<div id="ui">
+  <span id="score">Score: 0</span> · <span id="coins">Coins: 0</span>
+  <button id="shopBtn">Shop (S)</button>
+  <button id="restartBtn">Restart (R)</button>
+</div>
+
+<script>
+// --- Simple Unicorn Runner Prototype ---
+// Save coins and unlocked maps in localStorage
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+let W = canvas.width, H = canvas.height;
+function resizeCanvas() {
+  // keep logical size fixed for consistent gameplay; canvas CSS can scale
+  W = canvas.width;
+  H = canvas.height;
+}
+resizeCanvas();
+
+// Game state
+let state = 'menu'; // menu, playing, dead, shop
+let score = 0;
+let coins = parseInt(localStorage.getItem('ur_coins')||'0',10);
+let best = parseInt(localStorage.getItem('ur_best')||'0',10);
+let unlocked = JSON.parse(localStorage.getItem('ur_unlocked') || '["Classic"]'); // map names
+const uiScore = document.getElementById('score');
+const uiCoins = document.getElementById('coins');
+const shopBtn = document.getElementById('shopBtn');
+const restartBtn = document.getElementById('restartBtn');
+
+// Maps (themes)
+const maps = [
+  {name:'Classic', price:0, draw:bgClassic},
+  {name:'Sunset', price:20, draw:bgSunset},
+  {name:'Neon', price:50, draw:bgNeon}
+];
+
+// Player (unicorn)
+const player = {
+  x: 110, w: 48, h: 38,
+  y: 0, vy: 0, onGround: false,
+  color:'#fff', horn:'#FFD700'
+};
+
+const ground = {y: H - 48};
+let gravity = 0.7, jumpVel = -12;
+
+// Obstacles and coins
+let obstacles = [];
+let coinsArr = [];
+let spawnTimer = 0;
+let coinTimer = 0;
+let speedBase = 5;
+let elapsed = 0;
+
+// Input
+let pressing = false;
+function jump() {
+  if (player.onGround) {
+    player.vy = jumpVel;
+    player.onGround = false;
+  }
+}
+
+// Shop UI overlay drawing
+function openShop(){ state='shop'; }
+function closeShop(){ state='menu'; }
+
+// Helpers
+function rand(min,max){ return Math.random()*(max-min)+min; }
+
+// Backgrounds
+function bgClassic(ctx,W,H){ // rainbow + clouds
+  const g = ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,'#a7f3d0'); g.addColorStop(0.5,'#bde0ff'); g.addColorStop(1,'#ffd6f0');
+  ctx.fillStyle = g; ctx.fillRect(0,0,W,H);
+  // simple rainbow arc
+  for(let i=0;i<6;i++){
+    ctx.beginPath();
+    ctx.lineWidth = 18 - i*2;
+    ctx.strokeStyle = ['#ff5c8a','#ff9f43','#ffd43b','#5ce1e6','#7ee7a6','#d6b3ff'][i];
+    ctx.arc(W*0.2, H, 300-i*16, Math.PI, Math.PI*1.6);
+    ctx.stroke();
+  }
+  // clouds
+  for(let i=0;i<3;i++){ drawCloud(ctx, 150 + i*260, 70 + (i%2)*20, 1.0); }
+}
+function bgSunset(ctx,W,H){
+  const g = ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,'#FFDEE9'); g.addColorStop(1,'#B5FFFC');
+  ctx.fillStyle = g; ctx.fillRect(0,0,W,H);
+  // big sun
+  ctx.beginPath(); ctx.fillStyle = '#FFD27F'; ctx.arc(W*0.85, H*0.2, 40,0,Math.PI*2); ctx.fill();
+  for(let i=0;i<4;i++){ drawCloud(ctx, 120 + i*220, 60 + (i%2)*18, 0.9); }
+}
+function bgNeon(ctx,W,H){
+  const g = ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,'#10002b'); g.addColorStop(1,'#240046');
+  ctx.fillStyle = g; ctx.fillRect(0,0,W,H);
+  // neon slashes
+  for(let i=0;i<7;i++){
+    ctx.fillStyle = `rgba(${40+i*20},${10+i*12},${200-i*8},0.12)`;
+    ctx.fillRect(i*120, H*0.6 - (i%2)*40, 80, 260);
+  }
+  for(let i=0;i<3;i++){ drawCloud(ctx, 90 + i*260, 50 + (i%2)*22, 0.6); }
+}
+function drawCloud(ctx,x,y,scale=1){
+  ctx.fillStyle='rgba(255,255,255,0.9)';
+  ctx.beginPath();
+  ctx.ellipse(x,y,30*scale,22*scale,0,0,Math.PI*2);
+  ctx.ellipse(x+24*scale,y+6*scale,22*scale,18*scale,0,0,Math.PI*2);
+  ctx.ellipse(x-22*scale,y+6*scale,20*scale,16*scale,0,0,Math.PI*2);
+  ctx.fill();
+}
+
+// Draw unicorn as simple shape
+function drawUnicorn(ctx,p){
+  // body
+  ctx.fillStyle = p.color; ctx.fillRect(p.x, p.y, p.w, p.h);
+  // head
+  ctx.fillRect(p.x + p.w - 8, p.y - 14, 22, 18);
+  // ear
+  ctx.fillStyle='#ffb6c1'; ctx.fillRect(p.x + p.w + 8, p.y - 18, 6, 8);
+  // horn
+  ctx.fillStyle = p.horn; ctx.beginPath(); ctx.moveTo(p.x + p.w + 16, p.y - 18); ctx.lineTo(p.x + p.w + 22, p.y - 4); ctx.lineTo(p.x + p.w + 10, p.y - 4); ctx.fill();
+  // eye
+  ctx.fillStyle='#222'; ctx.fillRect(p.x + p.w + 8, p.y - 8, 4, 4);
+  // rainbow tail
+  const tails = ['#ff5c8a','#ff9f43','#ffd43b','#5ce1e6','#7ee7a6'];
+  for(let i=0;i<5;i++){
+    ctx.fillStyle = tails[i];
+    ctx.fillRect(p.x - (i*6) - 8, p.y + 6 + i*2, 20, 4);
+  }
+}
+
+// Reset game
+function reset(){
+  score = 0; elapsed = 0;
+  obstacles = []; coinsArr = [];
+  spawnTimer = 0; coinTimer = 0;
+  player.y = ground.y - player.h;
+  player.vy = 0; player.onGround = true;
+  state = 'playing';
+}
+
+// Collision helpers
+function rectsOverlap(a,b){
+  return !(a.x + a.w < b.x || a.x > b.x + b.w || a.y + a.h < b.y || a.y > b.y + b.h);
+}
+
+// Main loop
+let last = performance.now();
+function loop(now){
+  const dt = Math.min(34, now - last); last = now;
+  if(state === 'playing') update(dt/16.67);
+  draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+function update(delta){
+  elapsed += delta;
+  // difficulty increases slightly
+  const speed = speedBase + Math.floor(score / 100);
+  // player physics
+  player.vy += gravity;
+  player.y += player.vy;
+  if(player.y + player.h >= ground.y){ player.y = ground.y - player.h; player.vy = 0; player.onGround = true; }
+
+  // spawn obstacles
+  spawnTimer -= delta;
+  if(spawnTimer <= 0){
+    spawnTimer = rand(60,140) - Math.min(score/5,40);
+    obstacles.push({x: W + 40, y: ground.y - rand(20,60), w: 48, h: rand(20,40), speed: speed + rand(0,2)});
+  }
+  // spawn coins
+  coinTimer -= delta;
+  if(coinTimer <= 0){
+    coinTimer = rand(90,200);
+    coinsArr.push({x: W + 40, y: ground.y - rand(90,140), r: 10, speed: speed});
+  }
+
+  // update obstacles
+  for(let i=obstacles.length-1;i>=0;i--){
+    const o = obstacles[i]; o.x -= o.speed;
+    if(o.x + o.w < -10) obstacles.splice(i,1);
+    else {
+      // collision
+      const pbox = {x:player.x+6,y:player.y+6,w:player.w-12,h:player.h-6};
+      if(rectsOverlap(pbox, o)){
+        // hit
+        state = 'dead';
+        // Save best
+        if(Math.floor(score)>best){ best = Math.floor(score); localStorage.setItem('ur_best', best); }
+      }
+    }
+  }
+  // update coins
+  for(let i=coinsArr.length-1;i>=0;i--){
+    const c = coinsArr[i]; c.x -= c.speed;
+    if(c.x + c.r < -10) coinsArr.splice(i,1);
+    else {
+      // collision distance check
+      const px = player.x + player.w/2, py = player.y + player.h/2;
+      const dx = px - c.x, dy = py - c.y;
+      if(dx*dx + dy*dy < (c.r + 18)*(c.r + 18)){
+        // collect
+        coins += 1;
+        localStorage.setItem('ur_coins', coins);
+        coinsArr.splice(i,1);
+      }
+    }
+  }
+
+  // update score
+  score += delta * 0.6 * (1 + Math.min(score/1000,2));
+  uiScore.textContent = 'Score: ' + Math.floor(score) + (best ? ' (Best: '+best+')' : '');
+  uiCoins.textContent = 'Coins: ' + coins;
+}
+
+function draw(){
+  // current map draw
+  const mapName = unlocked[unlocked.length-1]; // last unlocked = chosen
+  const chosen = maps.find(m=>m.name===mapName) || maps[0];
+  // allow selected map to be last element in unlocked list
+  chosen.draw(ctx,W,H);
+
+  // ground
+  ctx.fillStyle = '#6ab04c'; ctx.fillRect(0, ground.y, W, H - ground.y);
+
+  // obstacles
+  for(const o of obstacles){
+    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    ctx.fillRect(o.x, o.y, o.w, o.h);
+    // cloud-like
+    ctx.fillStyle = '#d3f0ff';
+    ctx.fillRect(o.x+6, o.y-10, o.w-12, 8);
+  }
+
+  // coins
+  for(const c of coinsArr){
+    ctx.beginPath();
+    ctx.fillStyle = '#FFD700'; ctx.arc(c.x, c.y, c.r, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = 'rgba(0,0,0,0.06)'; ctx.fillRect(c.x-6, c.y+4, 12, 3);
+  }
+
+  // unicorn
+  drawUnicorn(ctx, player);
+
+  // HUD and states
+  ctx.fillStyle = 'rgba(0,0,0,0.06)';
+  ctx.fillRect(10,10,220,38);
+  ctx.fillStyle = '#fff'; ctx.font = '14px Arial'; ctx.fillText('Map: ' + (chosen.name || 'Classic'), 18, 33);
+
+  if(state === 'menu'){
+    ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(W/2-160,H/2-70,320,140);
+    ctx.fillStyle='#fff'; ctx.font='20px Arial'; ctx.fillText('Unicorn Runner', W/2-80, H/2-30);
+    ctx.font='14px Arial'; ctx.fillText('Tap / Space to start. S = Shop. Collect coins to buy maps.', W/2-150, H/2);
+  } else if(state === 'dead'){
+    ctx.fillStyle='rgba(0,0,0,0.6)'; ctx.fillRect(W/2-160,H/2-70,320,140);
+    ctx.fillStyle='#fff'; ctx.font='22px Arial'; ctx.fillText('You crashed!', W/2-60, H/2-28);
+    ctx.font='16px Arial'; ctx.fillText('Score: ' + Math.floor(score) + '  Coins: ' + coins, W/2-90, H/2+6);
+    ctx.font='14px Arial'; ctx.fillText('Press R or click Restart to play again.', W/2-120, H/2+36);
+  } else if(state === 'shop'){
+    drawShop();
+  }
+}
+
+// Shop drawing and interaction
+function drawShop(){
+  const w = 520, h = 220;
+  const x = (W - w)/2, y = (H - h)/2;
+  ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(x,y,w,h);
+  ctx.fillStyle = '#fff'; ctx.font='20px Arial'; ctx.fillText('Shop - Unlock Maps', x+18, y+34);
+  ctx.font='14px Arial';
+  for(let i=0;i<maps.length;i++){
+    const m = maps[i];
+    const mx = x + 18 + i*170, my = y+60;
+    ctx.fillStyle = '#222'; ctx.fillRect(mx, my, 150, 100);
+    // preview background
+    m.draw(ctx, 150, 100);
+    ctx.fillStyle = '#fff'; ctx.fillText(m.name, mx+8, my+116);
+    // price / unlocked
+    if(unlocked.includes(m.name)){
+      ctx.fillStyle = '#7bed9f'; ctx.fillText('Unlocked', mx+8, my+136);
+    } else {
+      ctx.fillStyle = '#ffd700'; ctx.fillText('Price: ' + m.price, mx+8, my+136);
+    }
+    // draw clickable button area
+    ctx.strokeStyle = '#fff'; ctx.strokeRect(mx, my, 150, 100);
+  }
+  ctx.fillStyle='#fff'; ctx.fillText('Tap a map to unlock/select. Close: click outside or press S.', x+18, y + h - 12);
+}
+
+// Input handlers
+window.addEventListener('keydown', e=>{
+  if(e.code === 'Space'){ e.preventDefault(); if(state==='menu'){ reset(); } else if(state==='playing'){jump();} else if(state==='dead'){ /*no*/ } }
+  if(e.key === 's' || e.key === 'S'){ if(state==='shop') state='menu'; else state='shop'; }
+  if(e.key === 'r' || e.key === 'R'){ reset(); }
+});
+canvas.addEventListener('pointerdown', e=>{
+  if(state==='menu'){ reset(); return; }
+  if(state==='playing'){ jump(); return; }
+  if(state==='dead'){ reset(); return; }
+  if(state==='shop'){
+    // click map selection
+    const rect = canvas.getBoundingClientRect();
+    const px = (e.clientX - rect.left) * (canvas.width/rect.width);
+    const py = (e.clientY - rect.top) * (canvas.height/rect.height);
+    const w = 520, h = 220;
+    const x = (W - w)/2, y = (H - h)/2;
+    for(let i=0;i<maps.length;i++){
+      const mx = x + 18 + i*170, my = y+60;
+      if(px >= mx && px <= mx+150 && py >= my && py <= my+100){
+        const m = maps[i];
+        if(unlocked.includes(m.name)){
+          // select map: move it to end
+          unlocked = unlocked.filter(n=>n!==m.name);
+          unlocked.push(m.name);
+          localStorage.setItem('ur_unlocked', JSON.stringify(unlocked));
+        } else if(coins >= m.price){
+          coins -= m.price; localStorage.setItem('ur_coins', coins);
+          unlocked.push(m.name); localStorage.setItem('ur_unlocked', JSON.stringify(unlocked));
+        } else {
+          // not enough coins: simple flash or console
+          console.log('Not enough coins');
+        }
+      }
+    }
+    // close shop if clicked outside
+    if(px < x || px > x+w || py < y || py > y+h) state='menu';
+  }
+});
+
+// UI buttons
+shopBtn.addEventListener('click', ()=>{ if(state==='shop') state='menu'; else state='shop'; });
+restartBtn.addEventListener('click', ()=>{ reset(); });
+
+// Start in menu
+player.y = ground.y - player.h;
+
+// initial draw call to show menu
+draw();
+</script>
+</body>
